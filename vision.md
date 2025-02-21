@@ -86,7 +86,7 @@ abstract class InstancedVisionProcessor<S> extends VisionProcessor {
 }
 ```
 
-This instanced vision processor manages separate state for each camera. Every processor needs to "remember" information from the `process` call to use in `toNetworkTable` and `drawOnImage`. The `InstancedVisionProcessor` manages that state and provides an interface that implementations can easily use to store per-camera state, but because it's a derived class, it's not exposed to consumers of the `VisionProcessor` class-- and it shouldn't, that's not the callers' concern.
+This instanced vision processor manages separate state for each camera. Every processor needs to "remember" information from the `process` call to use in `toNetworkTable` and `drawOnImage`. The `InstancedVisionProcessor` manages that state and provides an interface that implementations can easily use to store per-camera state, but because it's a derived class, it's not exposed to consumers of the `VisionProcessor` class—and it shouldn't, that's not the callers' concern.
 
 ```java
 abstract class ObjectVisionProcessor extends InstancedVisionProcessor<Collection<VisionObject>> {
@@ -138,7 +138,7 @@ class VideoCaptureCamera {
 }
 ```
 
-The `create` method here just calls a concrete constructor of the `VideoCaptureCamera`. Since it's a factory, though, we can have multiple factories, with each kind calling a different constructor. That means we can have different implementations that abstract away the details of creating a camera-- we just put in the parameters and a camera comes out (or possibly an `IOException`).
+The `create` method here just calls a concrete constructor of the `VideoCaptureCamera`. Since it's a factory, though, we can have multiple factories, with each kind calling a different constructor. That means we can have different implementations that abstract away the details of creating a camera—we just put in the parameters and a camera comes out (or possibly an `IOException`).
 
 #### An Alternative to Factories: Functions
 
