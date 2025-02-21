@@ -204,10 +204,93 @@ The frame camera just returns the same frame every frame. It has the optional `f
 
 ## Vision Processors
 
+So cameras are how we get the frame, vision processors define how we _use_ it. They're pretty flexible in what they can do, especially because I've experimentally added a bunch of features only to not use them.
+
+The base class is `frc.vision.process.VisionProcessor`, and it has three abstract functions to be overridden:
+
+- `process` takes the image and has the most information available to it: the camera it came from and any "dependencies". It's not supposed to modify the image in any way, since the ordering of these processors is (mostly) undefined, and the camera is passed, both for configuration and to identify the camera so multiple can be used.
+- `toNetworkTable` passes a network table in, along with the same camera object. The processor should have stored all of the information it needs during the `process` call, so it can quickly send this.
+- `drawOnImage` is the time to modify the image, however the processor wants. This allows information to be displayed for the user to see.
+
+### `InstancedVisionProcessor`
+
+As I mentioned above, all of the heavy processing is supposed to be done in the `process` phase, and the results should be stored. The "standard" way that this is done is through `InstancedVisionProcessor`, which wraps a `ConcurrentHashMap` to lookup state by the given camera. This provides new abstract methods with the `Stateful` suffix, each of which take a `InstancedVisionProcessor.Ref` parameter at the end. This is done instead of just passing the object directly so it can properly hold `null`s (which are also the default value) and be reassigned.
+
+### `ObjectVisionProcessor`
+
+This is neat and all, but a lot of our vision can be defined even more precisely: we have some kind of "object" in our field of vision that we want to get information like the distance and angle to it. Generally, we can calculate this by the bounding rectangle and the height of the object compared to its real height. The `VisionObject` class represents this—it's an extension of OpenCV's `Rect` with fields for the calculated angles.
+
+`ObjectVisionProcessor` extends `InstancedVisionProcessor` to only need one method to be implemented: `processObjects`. It takes the image, camera, and dependencies and returns the objects in this image. You don't even need to calculate the distance and angles in that method, since that's implemented in `ObjectVisionProcessor` too.
+
+### `RectVisionProcessor`
+
+`VisionObject`s are rectangles, right? In that case, what simpler thing to search for than a rectangle of some color? That's what this class does. It slightly blurs the image, then applies a color filter (in the HSV color space), and finally finds bounding rectangles of "blobs" of the matched color. This idea was used in 2023 and 2024, and while this Java implementation hasn't been used as of 2025, it should be applicable to most years.
+
+#### Configuration
+
+This is a concrete vision processor, and can be defined in the processor config file with the following parameters:
+
+- the `type` field should be `"rect"`
+- `hmin`, `hmax`, `smin`, `smax`, `vmin`, and `vmax` define the bounds of the colors that we want to match
+- `width` and `height`, with the convention of being in inches, are used to calculate the expected aspect ratio
+- `tolerance` defines how far the bounding rectangle's aspect ratio can be from the expected aspect ratio
+- if `sideways` is true, it also counts objects with the inverse of the aspect ratio i.e. on their side
+- `minArea` and `maxArea` are the bounds on the area **of the bounding rectangle**
+
+### `AprilTagVisionProcessor`
+
+This is a simple one, it just needs to call to WPI's april tag library. It's an object vision processor, which means the majority of its functionality looks similar to the rectangle detector. However, it also puts an array called `ids` in the network table, which is... the IDs of each tag, and optionally can select the nearest tag from a `filter` field and put that in the table too.
+
+### `Coral2025Processor`
+
+This wasn't actually used in 2025, but it's an experiment for the expected rotated bounding rectangle of an object based on the position of an april tag. It's kept because it might be useful in future years, if anyone wants to figure that out.
+
 ## Combined Pipeline
+
+So we have a source of frames, and we have processors for them, now it's time to put the two together. Sure, you could just do this:
+
+```java
+var cfg = new VideoCaptureCamera.Config();
+cfg.width = 640;
+cfg.height = 480;
+cfg.index = 0;
+VideoCaptureCamera cam = new VideoCaptureCamera("cam", cfg, LocalDateTime.now());
+VisionProcessor proc = /* whatever processor you want */;
+
+while (true) {
+  Mat frame = cam.readFrame();
+  proc.process(frame, cam, null);
+  proc.drawOnImage(frame, cam);
+  HighGui.imshow("Image", proc);
+}
+```
+
+The issue with this is speed (and modularity, but that could be fixed while keeping this same basic structure). The call to `readFrame` is synchronous, it has to be synchronous because OpenCV's function is synchronous, and most likely the underlying OS call is too. Once we have that frame, we can only process it one way at a time like this. All of this pipeline code is to make this more efficient, and allow multiple things to be done at once.
 
 ### Camera Threads
 
+What's the best way to handle a synchronous process that needs to be run as fast as possible? You put it in a thread whose only job is to call that function repeatedly (with a check for a shutdown flag of course, we want to have a graceful way to stop it). That's the purpose of the `AsyncCameraThread`; it tells the camera to get a frame, then calls a callback on it.
+
+### Camera Groups
+
+This manages a set of `AsyncCameraThread`s to easily start and stop them all as a group, as well as set all of them to the same callback.
+
 ### `VisionLibsGroup`
 
+The name is an artifact of when the processors were called "libraries", similarly to why there's a camera configuration value called `vlibs`. This class handles delegating all of the work to the processors, with a given executor so it can be run on a thread pool.
+
 ### Miscellaneous Utilities
+
+#### Displaying Images
+
+GUI work is often not thread-safe, and OpenCV's HighGui code is no different. To make this easier, the `ImShower` class is both a `BiConsumer` to act as a callback for a frame producer (an `AsyncCameraThread` directly, a `CameraGroup`, or the output of `VisionLibsGroup`) and a `Runnable` to display the images when called from the main thread.
+
+**It's called `ImShower` because it wraps `HighGui.imshow`. It is not in any way related to showering. The two of you that made me write this, you know who you are.**
+
+#### Frame Buffering
+
+To sligtly smooth out the camera's frames, a FIFO queue based on a ring buffer is used. This implements the `Queue` interface for `Mat`s, overwriting the first element when its capacity fills. This is specialized for `Mat`s only because
+
+1. there's a `copyTo` method that's more efficient, reusing allocations
+2. Java types aren't real, generics aren't real types, and trying to make a generic array is way harder than it should be, and
+3. the last time I tried this, I spent half a week debugging a memory leak.
