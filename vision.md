@@ -279,6 +279,24 @@ This manages a set of `AsyncCameraThread`s to easily start and stop them all as 
 
 The name is an artifact of when the processors were called "libraries", similarly to why there's a camera configuration value called `vlibs`. This class handles delegating all of the work to the processors, with a given executor so it can be run on a thread pool.
 
+#### Inter-processor dependencies
+
+One idea I worked with was the ability to have one processor run before another. This dependency ordering can be defined on a vision processor in the processor config file (default `config/process.json`). If two processors don't have an ordering between them, the ordering is unspecified, and all of their tasks will be queued at once. Any cycles in the dependency ordering will lead to an error being printed and those processors not being scheduled.
+
+Dependencies are specified as a mapping in the processor config, and the `Map<String, VisionProcessor>` parameter to `process`. The keys are the same as passed in the configuration file, and the values are the processors with the same name, which will have already run for this frame.
+
+#### Initial processing
+
+This step is the most complex, as it requires ordering between processors. The way I've implemented it is by grouping processors into "stages" with each one having to complete before the others. This sacrifices a bit of potential parallelism for clarity and simplicity. The ordering is computed ahead of time, so the processors are just indexed from a `List<VisionProcessor>` in this phase.
+
+#### Posting
+
+Both sending to network tables and drawing on the image are concurrent with each other, and all take place after all of the processors have run. No locking is done from our side because OpenCV's modifications can only race on pixels in the image, so there's no risk of invalidating buffers, and WPI has a global mutex on all of the network table code.
+
+#### Exception Handling and Cleanup
+
+If an exception occurs during this process, it's logged to the camera's log file. After that, the handle to the future is removed from the collection of active `CompletableFuture`s for the camera and some atomics are modified to track the count of running tasks.
+
 ### Miscellaneous Utilities
 
 #### Displaying Images
@@ -289,7 +307,7 @@ GUI work is often not thread-safe, and OpenCV's HighGui code is no different. To
 
 #### Frame Buffering
 
-To sligtly smooth out the camera's frames, a FIFO queue based on a ring buffer is used. This implements the `Queue` interface for `Mat`s, overwriting the first element when its capacity fills. This is specialized for `Mat`s only because
+To sligtly smooth out the camera's framerate, a FIFO queue based on a ring buffer is used. This implements the `Queue` interface for `Mat`s, overwriting the first element when its capacity fills. This is specialized for `Mat`s only because
 
 1. there's a `copyTo` method that's more efficient, reusing allocations
 2. Java types aren't real, generics aren't real types, and trying to make a generic array is way harder than it should be, and
